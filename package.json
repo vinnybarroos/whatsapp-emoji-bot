@@ -1,0 +1,27 @@
+{
+  "name": "whatsapp-emoji-counter-bot",
+  "version": "1.0.0",
+  "description": "Bot do WhatsApp para contar emojis mensalmente em grupos",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "emoji",
+    "counter",
+    "nodejs"
+  ],
+  "author": "Seu Nome",
+  "license": "MIT"
+}
