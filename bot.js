@@ -6,8 +6,11 @@ const PORT = process.env.PORT || 3000;
 
 class EmojiCounterBot {
     constructor() {
+        // Configuração mais simples e compatível
         this.client = new Client({
-            authStrategy: new LocalAuth(),
+            authStrategy: new LocalAuth({
+                dataPath: './auth_info'
+            }),
             puppeteer: {
                 headless: true,
                 args: [
@@ -18,8 +21,16 @@ class EmojiCounterBot {
                     '--no-first-run',
                     '--no-zygote',
                     '--single-process',
-                    '--disable-gpu'
-                ]
+                    '--disable-gpu',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor'
+                ],
+                // Tentar encontrar Chrome automaticamente
+                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
+                               process.env.CHROME_BIN || 
+                               '/usr/bin/chromium-browser' ||
+                               '/usr/bin/google-chrome-stable' ||
+                               undefined
             }
         });
         
@@ -33,115 +44,138 @@ class EmojiCounterBot {
     }
 
     initializeBot() {
-        // Gerar QR Code para autenticação
+        // Event handlers
         this.client.on('qr', (qr) => {
-            console.log('QR Code gerado!');
+            console.log('✅ QR Code gerado! Acesse /qr para visualizar');
             this.qrCode = qr;
         });
 
-        // Bot conectado
         this.client.on('ready', () => {
-            console.log('Bot do WhatsApp está pronto!');
+            console.log('🚀 Bot WhatsApp conectado e funcionando!');
             this.isReady = true;
             this.qrCode = null;
         });
 
-        // Bot desconectado
         this.client.on('disconnected', (reason) => {
-            console.log('Bot desconectado:', reason);
+            console.log('❌ Bot desconectado:', reason);
             this.isReady = false;
         });
 
-        // Processar mensagens recebidas
+        this.client.on('auth_failure', (msg) => {
+            console.error('❌ Falha na autenticação:', msg);
+        });
+
         this.client.on('message', async (message) => {
             try {
                 await this.handleMessage(message);
             } catch (error) {
-                console.error('Erro ao processar mensagem:', error);
+                console.error('❌ Erro ao processar mensagem:', error);
             }
         });
 
-        // Inicializar cliente
-        this.client.initialize();
+        // Inicializar com tratamento de erro
+        this.client.initialize().catch(error => {
+            console.error('❌ Erro ao inicializar cliente:', error);
+            // Tentar novamente em 30 segundos
+            setTimeout(() => {
+                console.log('🔄 Tentando reconectar...');
+                this.client.initialize();
+            }, 30000);
+        });
     }
 
     async handleMessage(message) {
-        const chat = await message.getChat();
-        
-        // Verificar se é um grupo
-        if (!chat.isGroup) return;
-        
-        const groupId = chat.id._serialized;
-        const messageBody = message.body;
-        const currentDate = new Date();
-        const monthYear = `${currentDate.getMonth() + 1}-${currentDate.getFullYear()}`;
-        const userId = message.author || message.from;
+        try {
+            const chat = await message.getChat();
+            
+            // Só funciona em grupos
+            if (!chat.isGroup) return;
+            
+            const groupId = chat.id._serialized;
+            const messageBody = message.body;
+            const currentDate = new Date();
+            const monthYear = `${currentDate.getMonth() + 1}-${currentDate.getFullYear()}`;
+            const userId = message.author || message.from;
 
-        // Armazenar nome do usuário
-        const contact = await message.getContact();
-        this.userNames.set(userId, contact.pushname || contact.name || 'Usuário');
+            // Salvar nome do usuário
+            try {
+                const contact = await message.getContact();
+                this.userNames.set(userId, contact.pushname || contact.name || 'Usuário');
+            } catch (error) {
+                console.log('⚠️ Erro ao obter contato, usando nome padrão');
+                this.userNames.set(userId, 'Usuário');
+            }
 
-        // Processar comandos do bot
-        if (messageBody.startsWith('!emoji')) {
-            await this.handleCommand(message, chat, groupId);
-            return;
+            // Processar comandos
+            if (messageBody.startsWith('!emoji')) {
+                await this.handleCommand(message, chat, groupId);
+                return;
+            }
+
+            // Contar emojis
+            this.countEmojisInMessage(messageBody, groupId, monthYear, userId);
+        } catch (error) {
+            console.error('❌ Erro em handleMessage:', error);
         }
-
-        // Contar emojis nas mensagens normais
-        this.countEmojisInMessage(messageBody, groupId, monthYear, userId);
     }
 
     async handleCommand(message, chat, groupId) {
         const args = message.body.split(' ');
         const command = args[1];
 
-        switch (command) {
-            case 'add':
-                await this.addEmojiTracking(message, chat, args);
-                break;
-            case 'remove':
-                await this.removeEmojiTracking(message, chat, args);
-                break;
-            case 'count':
-                await this.showEmojiCount(message, chat, groupId, args);
-                break;
-            case 'ranking':
-                await this.showEmojiRanking(message, chat, groupId, args);
-                break;
-            case 'user':
-                await this.showUserEmojiCount(message, chat, groupId, args);
-                break;
-            case 'list':
-                await this.listTrackedEmojis(message, chat);
-                break;
-            case 'help':
-                await this.showHelp(message, chat);
-                break;
-            default:
-                await message.reply('Comando não reconhecido. Use !emoji help para ver os comandos disponíveis.');
+        try {
+            switch (command) {
+                case 'add':
+                    await this.addEmojiTracking(message, chat, args);
+                    break;
+                case 'remove':
+                    await this.removeEmojiTracking(message, chat, args);
+                    break;
+                case 'count':
+                    await this.showEmojiCount(message, chat, groupId, args);
+                    break;
+                case 'ranking':
+                    await this.showEmojiRanking(message, chat, groupId, args);
+                    break;
+                case 'user':
+                    await this.showUserEmojiCount(message, chat, groupId, args);
+                    break;
+                case 'list':
+                    await this.listTrackedEmojis(message, chat);
+                    break;
+                case 'help':
+                    await this.showHelp(message, chat);
+                    break;
+                default:
+                    await message.reply('❓ Comando não reconhecido. Use !emoji help para ajuda.');
+            }
+        } catch (error) {
+            console.error('❌ Erro ao executar comando:', error);
+            await message.reply('❌ Erro interno. Tente novamente em alguns segundos.');
         }
     }
 
     async addEmojiTracking(message, chat, args) {
         if (args.length < 3) {
-            await message.reply('Uso: !emoji add 😀 (substitua 😀 pelo emoji desejado)');
+            await message.reply('❓ Uso: !emoji add 😀');
             return;
         }
 
         const emoji = args[2];
         this.trackedEmojis.add(emoji);
-        await message.reply(`✅ Emoji ${emoji} adicionado para rastreamento!`);
+        await message.reply(`✅ Emoji ${emoji} adicionado!`);
+        console.log(`➕ Emoji ${emoji} adicionado ao tracking`);
     }
 
     async removeEmojiTracking(message, chat, args) {
         if (args.length < 3) {
-            await message.reply('Uso: !emoji remove 😀');
+            await message.reply('❓ Uso: !emoji remove 😀');
             return;
         }
 
         const emoji = args[2];
         this.trackedEmojis.delete(emoji);
-        await message.reply(`❌ Emoji ${emoji} removido do rastreamento!`);
+        await message.reply(`❌ Emoji ${emoji} removido!`);
     }
 
     async showEmojiCount(message, chat, groupId, args) {
@@ -151,13 +185,13 @@ class EmojiCounterBot {
         const monthYear = `${month}-${year}`;
 
         if (!emoji) {
-            await message.reply('Uso: !emoji count 😀 [mês] [ano]\nExemplo: !emoji count 😀 12 2024');
+            await message.reply('❓ Uso: !emoji count 😀 [mês] [ano]');
             return;
         }
 
         const groupData = this.emojiCounts.get(groupId);
         if (!groupData || !groupData[emoji] || !groupData[emoji][monthYear]) {
-            await message.reply(`Nenhum registro encontrado para o emoji ${emoji} em ${month}/${year}`);
+            await message.reply(`📭 Nenhum ${emoji} encontrado em ${month}/${year}`);
             return;
         }
 
@@ -173,9 +207,8 @@ class EmojiCounterBot {
 
         userList.sort((a, b) => b.count - a.count);
 
-        let response = `📊 *Contagem do emoji ${emoji} em ${month}/${year}*\n`;
-        response += `📈 Total: ${totalCount} vezes\n\n`;
-        response += `👥 *Por pessoa:*\n`;
+        let response = `📊 *${emoji} em ${month}/${year}*\n`;
+        response += `📈 Total: ${totalCount}\n\n`;
         
         userList.forEach((user, index) => {
             const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '▫️';
@@ -192,13 +225,13 @@ class EmojiCounterBot {
         const monthYear = `${month}-${year}`;
 
         if (!emoji) {
-            await message.reply('Uso: !emoji ranking 😀 [mês] [ano]');
+            await message.reply('❓ Uso: !emoji ranking 😀');
             return;
         }
 
         const groupData = this.emojiCounts.get(groupId);
         if (!groupData || !groupData[emoji] || !groupData[emoji][monthYear]) {
-            await message.reply(`Nenhum registro encontrado para o emoji ${emoji} em ${month}/${year}`);
+            await message.reply(`📭 Sem ranking para ${emoji} em ${month}/${year}`);
             return;
         }
 
@@ -234,7 +267,7 @@ class EmojiCounterBot {
         const monthYear = `${month}-${year}`;
 
         if (!emoji) {
-            await message.reply('Uso: !emoji user 😀 [mês] [ano] - Mostra sua contagem pessoal');
+            await message.reply('❓ Uso: !emoji user 😀');
             return;
         }
 
@@ -243,52 +276,48 @@ class EmojiCounterBot {
 
         const groupData = this.emojiCounts.get(groupId);
         if (!groupData || !groupData[emoji] || !groupData[emoji][monthYear] || !groupData[emoji][monthYear][userId]) {
-            await message.reply(`${userName}, você não enviou o emoji ${emoji} em ${month}/${year}`);
+            await message.reply(`📭 ${userName}, você não enviou ${emoji} em ${month}/${year}`);
             return;
         }
 
         const userCount = groupData[emoji][monthYear][userId];
-        await message.reply(`📊 ${userName}, você enviou o emoji ${emoji} ${userCount} vezes em ${month}/${year}`);
+        await message.reply(`📊 ${userName}: ${userCount}x ${emoji} em ${month}/${year}`);
     }
 
     async listTrackedEmojis(message, chat) {
         if (this.trackedEmojis.size === 0) {
-            await message.reply('Nenhum emoji está sendo rastreado. Use !emoji add para adicionar emojis.');
+            await message.reply('📝 Nenhum emoji sendo rastreado.\nUse: !emoji add 😀');
             return;
         }
 
         const emojiList = Array.from(this.trackedEmojis).join(' ');
-        await message.reply(`📋 Emojis rastreados: ${emojiList}`);
+        await message.reply(`📋 Rastreando: ${emojiList}`);
     }
 
     async showHelp(message, chat) {
-        const helpText = `
-🤖 *Comandos do Bot Contador de Emojis:*
+        const helpText = `🤖 *Bot Contador de Emojis*
 
-*Configuração:*
-!emoji add 😀 - Adiciona emoji para rastreamento
-!emoji remove 😀 - Remove emoji do rastreamento
-!emoji list - Lista emojis rastreados
+📝 *Configuração:*
+!emoji add 😀 - Adicionar emoji
+!emoji remove 😀 - Remover emoji  
+!emoji list - Ver emojis rastreados
 
-*Contagem:*
-!emoji count 😀 [mês] [ano] - Contagem detalhada por pessoa
-!emoji ranking 😀 [mês] [ano] - Ranking do emoji
-!emoji user 😀 [mês] [ano] - Sua contagem pessoal
+📊 *Contagem:*
+!emoji count 😀 - Ver contagem detalhada
+!emoji ranking 😀 - Ver ranking
+!emoji user 😀 - Sua contagem
 
-!emoji help - Mostra esta ajuda
-
-*Exemplos:*
+💡 *Exemplos:*
 !emoji add 👍
-!emoji count 👍 - (mês atual)
-!emoji count 👍 12 2024
-!emoji ranking 😂
-!emoji user 🎉 11 2024
-        `;
+!emoji count 👍
+!emoji ranking 😂 12 2024`;
         
         await message.reply(helpText);
     }
 
     countEmojisInMessage(messageBody, groupId, monthYear, userId) {
+        if (this.trackedEmojis.size === 0) return;
+
         if (!this.emojiCounts.has(groupId)) {
             this.emojiCounts.set(groupId, {});
         }
@@ -299,19 +328,14 @@ class EmojiCounterBot {
             const count = (messageBody.match(new RegExp(this.escapeRegex(emoji), 'g')) || []).length;
             
             if (count > 0) {
-                if (!groupData[emoji]) {
-                    groupData[emoji] = {};
-                }
-                
-                if (!groupData[emoji][monthYear]) {
-                    groupData[emoji][monthYear] = {};
-                }
-                
-                if (!groupData[emoji][monthYear][userId]) {
-                    groupData[emoji][monthYear][userId] = 0;
-                }
+                if (!groupData[emoji]) groupData[emoji] = {};
+                if (!groupData[emoji][monthYear]) groupData[emoji][monthYear] = {};
+                if (!groupData[emoji][monthYear][userId]) groupData[emoji][monthYear][userId] = 0;
                 
                 groupData[emoji][monthYear][userId] += count;
+                
+                const userName = this.userNames.get(userId) || 'Usuário';
+                console.log(`📊 ${userName}: +${count} ${emoji}`);
             }
         }
     }
@@ -325,7 +349,8 @@ class EmojiCounterBot {
             isReady: this.isReady,
             hasQrCode: !!this.qrCode,
             trackedEmojis: Array.from(this.trackedEmojis),
-            totalGroups: this.emojiCounts.size
+            totalGroups: this.emojiCounts.size,
+            uptime: process.uptime()
         };
     }
 
@@ -334,15 +359,17 @@ class EmojiCounterBot {
     }
 }
 
-// Inicializar o bot
+// Inicializar bot
+console.log('🚀 Iniciando Bot WhatsApp...');
 const bot = new EmojiCounterBot();
 
-// Rotas do servidor
+// Servidor HTTP
+app.use(express.json());
+
 app.get('/', (req, res) => {
-    const status = bot.getStatus();
     res.json({
-        message: '🤖 WhatsApp Emoji Counter Bot',
-        status: status,
+        message: '🤖 Bot WhatsApp Emoji Counter',
+        status: bot.getStatus(),
         timestamp: new Date().toISOString()
     });
 });
@@ -350,9 +377,18 @@ app.get('/', (req, res) => {
 app.get('/qr', (req, res) => {
     const qr = bot.getQrCode();
     if (qr) {
-        res.json({ qrCode: qr });
+        res.json({ 
+            qrCode: qr,
+            message: 'Use este QR Code para conectar o WhatsApp'
+        });
+    } else if (bot.isReady) {
+        res.json({ 
+            message: 'Bot já está conectado! ✅' 
+        });
     } else {
-        res.json({ message: 'Bot já está conectado ou QR Code não disponível' });
+        res.json({ 
+            message: 'Aguarde... Gerando QR Code...' 
+        });
     }
 });
 
@@ -360,9 +396,18 @@ app.get('/status', (req, res) => {
     res.json(bot.getStatus());
 });
 
-// Iniciar servidor
 app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
+    console.log(`🌐 Servidor rodando na porta ${PORT}`);
+    console.log(`📱 Acesse /qr para obter QR Code`);
+});
+
+// Tratamento de erros global
+process.on('unhandledRejection', (error) => {
+    console.error('❌ Erro não tratado:', error);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ Exceção não capturada:', error);
 });
 
 module.exports = EmojiCounterBot;
